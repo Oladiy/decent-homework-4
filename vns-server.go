@@ -4,21 +4,21 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	shell "github.com/ipfs/go-ipfs-api"
 	"io/ioutil"
 	"os"
 	"strings"
 )
 
-const storageFileName = "storage.txt"
-// TODO убрать, как сделаю прогу
-const data = "1234"
+const (
+	storageFileName = "storage.txt"
+	urlIPFS = "localhost:5001"
+)
 
 type Options struct {
 	requestType string
@@ -27,48 +27,12 @@ type Options struct {
 	sig string
 }
 
-// TODO убрать, как сделаю прогу
-func generateKeys() *ecdsa.PrivateKey {
-	privateKey, _ := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
-	return privateKey
-}
-
-// TODO убрать, как сделаю прогу
-func Sign(data []byte, key *ecdsa.PrivateKey) ([]byte, error){
-	//hash := sha256.New()
-	//hash.Write(data)
-
-	//signedR, signedS, _ := ecdsa.Sign(rand.Reader, key, []byte(base64.URLEncoding.EncodeToString(hash.Sum(nil))))
-	signed, _ := ecdsa.SignASN1(rand.Reader, key, data)
-
-	return signed, nil
-}
-
-// TODO отредактировать прокид данных извне, как сделаю прогу
 func main() {
-	privateKey := generateKeys()
-	//fmt.Printf("%x\n", privateKey.PublicKey)
-	//signed, err := Sign([]byte(data), privateKey)
-	_, err := Sign([]byte(data), privateKey)
-	if err != nil {
-		fmt.Errorf("failed to sign data")
-	}
-
 	options, err := getOptions(new(Options))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-
-	// TODO убрать, как сделаю прогу
-	//pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	//if err != nil {
-	//	panic("priehali")
-	//}
-	//options.uid = "vasya:" + hex.EncodeToString(pubKeyBytes)
-	//options.uid = "vasya:" + "pubkey"
-	//options.ipfsLink = "5678"
-	//options.sig = string(signed)
 
 	if options.requestType == "name-record-get" {
 		if err = get(options); err != nil {
@@ -93,32 +57,57 @@ func get(options *Options) error {
 		return err
 	}
 
-	// Ищем в хранилище строку uid + IPFS link
-	containsUID, line := findIPFSLinkByUID(storage, options.uid)
-	if !containsUID {
-		return errors.New("there is no such uid in storage")
+	// Получаем IPFS-link по UID
+	ipfsLink, err := findIPFSLinkByUID(storage, options.uid)
+	if err != nil {
+		return err
+	}
+	fmt.Println("\nlink:", ipfsLink)
+	err = storage.Close()
+	if err != nil {
+		return err
 	}
 
-	// Получаем IPFS-link по UID
-	ipfsLinkBoundary := strings.Index(line, "\t") + 1
-	fmt.Println("link:", line[ipfsLinkBoundary:])
-	return storage.Close()
+	// Выводим содержимое по IPFS link
+	sh := shell.NewShell(urlIPFS)
+	infoReader, err := sh.Cat(ipfsLink)
+	if err != nil {
+		return err
+	}
+
+	buf := new(bytes.Buffer)
+	_, err = buf.ReadFrom(infoReader)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(buf.String())
+
+	return infoReader.Close()
 }
 
-func findIPFSLinkByUID(storage *os.File, uid string) (bool, string) {
+func findIPFSLinkByUID(storage *os.File, uid string) (string, error) {
 	scanner := bufio.NewScanner(storage)
 	var containsUID bool
 	var line string
 	for scanner.Scan() {
 		line = scanner.Text()
 
-		if strings.Contains(line, uid) {
+		if strings.Contains(line, uid + "\t") {
 			containsUID = true
 			break
 		}
 	}
 
-	return containsUID, line
+	var ipfsLink string
+	if containsUID {
+		ipfsLinkBoundary := strings.Index(line, "\t") + 1
+		ipfsLink = line[ipfsLinkBoundary:]
+	} else {
+		return ipfsLink, errors.New("there is no such uid in storage")
+	}
+
+	return ipfsLink, nil
 }
 
 func set(options *Options) error {
@@ -133,7 +122,7 @@ func set(options *Options) error {
 
 	// Извлекаем из параметров командной строки ipfsLink и sig и приводим к байтам.
 	ipfsLink := []byte(options.ipfsLink)
-	sig := []byte(options.sig)
+	sig, _ := hex.DecodeString(options.sig)
 
 	// Проверяем подпись
 	if !ecdsa.VerifyASN1(publicKey.(*ecdsa.PublicKey), ipfsLink, sig) {
@@ -186,7 +175,7 @@ func findLineIndexByUID(storage *os.File, uid string, pubKeyBoundary int) (bool,
 		line = scanner.Text()
 		decodedPubKey, _ := hex.DecodeString(line[pubKeyBoundary:])
 
-		if strings.Contains(line[:pubKeyBoundary] + string(decodedPubKey), uid) {
+		if strings.Contains(line[:pubKeyBoundary] + fmt.Sprintf("%x", decodedPubKey), uid) {
 			containsUID = true
 			break
 		}
@@ -244,9 +233,15 @@ func updateStorage(options *Options, pubKeyBoundary int) error {
 		return err
 	}
 
+	// Декодируем публичный ключ в hex-формат
+	pubKeyDecoded, err := hex.DecodeString(options.uid[pubKeyBoundary:])
+	if err != nil {
+		return err
+	}
+
 	writer := bufio.NewWriter(outputStream)
 	_, err = writer.WriteString(options.uid[:pubKeyBoundary] +
-								fmt.Sprintf("%X", options.uid[pubKeyBoundary:]) +
+								fmt.Sprintf("%x", pubKeyDecoded) +
 								"\t" + options.ipfsLink + "\n")
 	err = writer.Flush()
 	if err != nil {
