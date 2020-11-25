@@ -48,7 +48,8 @@ func Sign(data []byte, key *ecdsa.PrivateKey) ([]byte, error){
 func main() {
 	privateKey := generateKeys()
 	//fmt.Printf("%x\n", privateKey.PublicKey)
-	signed, err := Sign([]byte(data), privateKey)
+	//signed, err := Sign([]byte(data), privateKey)
+	_, err := Sign([]byte(data), privateKey)
 	if err != nil {
 		fmt.Errorf("failed to sign data")
 	}
@@ -60,17 +61,19 @@ func main() {
 	}
 
 	// TODO убрать, как сделаю прогу
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		panic("priehali")
-	}
-	options.uid = "vasya:" + hex.EncodeToString(pubKeyBytes)
-	options.uid = "vasya:" + "pubkey"
-	options.ipfsLink = "5678"
-	options.sig = string(signed)
+	//pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	//if err != nil {
+	//	panic("priehali")
+	//}
+	//options.uid = "vasya:" + hex.EncodeToString(pubKeyBytes)
+	//options.uid = "vasya:" + "pubkey"
+	//options.ipfsLink = "5678"
+	//options.sig = string(signed)
 
 	if options.requestType == "name-record-get" {
-		get()
+		if err = get(options); err != nil {
+			fmt.Println(err)
+		}
 	}
 
 	if options.requestType == "name-record-set" {
@@ -83,8 +86,39 @@ func main() {
 	}
 }
 
-func get() {
-	fmt.Println("get")
+func get(options *Options) error {
+	// Открываем хранилище
+	storage, err := os.Open(storageFileName)
+	if err != nil {
+		return err
+	}
+
+	// Ищем в хранилище строку uid + IPFS link
+	containsUID, line := findIPFSLinkByUID(storage, options.uid)
+	if !containsUID {
+		return errors.New("there is no such uid in storage")
+	}
+
+	// Получаем IPFS-link по UID
+	ipfsLinkBoundary := strings.Index(line, "\t") + 1
+	fmt.Println("link:", line[ipfsLinkBoundary:])
+	return storage.Close()
+}
+
+func findIPFSLinkByUID(storage *os.File, uid string) (bool, string) {
+	scanner := bufio.NewScanner(storage)
+	var containsUID bool
+	var line string
+	for scanner.Scan() {
+		line = scanner.Text()
+
+		if strings.Contains(line, uid) {
+			containsUID = true
+			break
+		}
+	}
+
+	return containsUID, line
 }
 
 func set(options *Options) error {
@@ -116,11 +150,14 @@ func set(options *Options) error {
 			return err
 		}
 	} else {
-		storage, _ = os.Open(storageFileName)
+		storage, err = os.Open(storageFileName)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Ищем, есть ли уже в хранилище такой uid
-	containsUID, lineIndex := findInfoByUID(storage, options.uid, pubKeyBoundary)
+	containsUID, lineIndex := findLineIndexByUID(storage, options.uid, pubKeyBoundary)
 	if err = storage.Close(); err != nil {
 		return err
 	}
@@ -140,12 +177,13 @@ func set(options *Options) error {
 	return nil
 }
 
-func findInfoByUID(storage *os.File, uid string, pubKeyBoundary int) (bool, int){
+func findLineIndexByUID(storage *os.File, uid string, pubKeyBoundary int) (bool, int) {
 	scanner := bufio.NewScanner(storage)
 	var containsUID bool
+	var line string
 	var lineIndex int
 	for scanner.Scan() {
-		line := scanner.Text()
+		line = scanner.Text()
 		decodedPubKey, _ := hex.DecodeString(line[pubKeyBoundary:])
 
 		if strings.Contains(line[:pubKeyBoundary] + string(decodedPubKey), uid) {
