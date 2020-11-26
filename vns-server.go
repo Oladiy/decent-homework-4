@@ -88,6 +88,12 @@ func get(options *Options) error {
 
 func findIPFSLinkByUID(storage *os.File, uid string) (string, error) {
 	scanner := bufio.NewScanner(storage)
+
+	// Приводим A-F символы в pubKey к a-f
+	pubKeyBoundary := strings.Index(uid, ":") + 1
+	decodedPubKey, _ := hex.DecodeString(uid[pubKeyBoundary:])
+	uid = uid[:pubKeyBoundary] + fmt.Sprintf("%x", decodedPubKey)
+
 	var containsUID bool
 	var line string
 	for scanner.Scan() {
